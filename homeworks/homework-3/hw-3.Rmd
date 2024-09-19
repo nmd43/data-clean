@@ -15,14 +15,12 @@ library(devtools)
 library(cora)
 library(ggplot2)
 library(dplyr)
+
 data(cora) # load the cora data set
 #dim(cora)
 data(cora_gold) 
 #head(cora_gold) # contains pairs of records that are true matches.
 #dim(cora_gold)
-data(cora_gold_update) # contains a true unique identifier 
-#dim(cora_gold_update) 
-#length(unique(cora_gold_update$unique_id)) 
 ```
 
 
@@ -64,7 +62,7 @@ b <- 90
 ```
 
 ## Build corpus and perform shingling
-```{r show-package-lsh-1, echo=TRUE, cache=TRUE}
+```{r show-package-lsh-1, echo=TRUE, cache=TRUE, warning=FALSE}
 head(dat)
 # build the corpus using textreuse
 docs <- apply(dat, 1, function(x) paste(x[-1], collapse = " ")) # get strings
@@ -86,7 +84,7 @@ Note that all our records are now represented by 360 randomly selected and hashe
 
 Now, we find the buckets, candidates records, and calculate the Jaccard similarity for the candidate records (in the buckets)
 
-```{r show-package-lsh-2, echo=TRUE, cache=TRUE}
+```{r show-package-lsh-2, echo=TRUE, cache=TRUE, warning=FALSE}
 
 # perform lsh to get buckets
 buckets <- lsh(corpus, bands = b, progress = FALSE)
@@ -105,26 +103,105 @@ head(lsh_jaccard)
 
 We now plot the Jaccard similarities that are candidate pairs (under LSH)
 
-```{r, lsh-plot,echo=FALSE}
+```{r, lsh-plot,echo=FALSE, warning=FALSE}
 # plot jaccard similarities that are candidates
 qplot(lsh_jaccard$score)
 ```
 
-1. Calculate the reduction ratio from the total number of record comparisons ($N$ choose 2) compared to those under locality sensitive hashing (above). 
+1. Calculate the reduction ratio from the total number of record comparisons ($N$ choose 2) compared to those under locality sensitive hashing (above).
+```{r}
+N_total <- choose(n, 2)
+N_lsh <- nrow(candidates)
+reduction_ratio <- 1 - (N_lsh / N_total)
+reduction_ratio
+```
+
 
 2. Find the pairwise precision and recall under locality sensitive hashing. There are two places where we have ground truth. Note that cora_gold contains record pairs that are true matches; cora_gold_update contains a unique identifer alternatively. You will need to write your own code for this. 
 
 Hint: the lsh_jaccard contains our pairwise predictions and cora_gold contains the pairwise truth. How can you compare the pairs in lsh_jaccard and the pairs in cora_gold to find the number of true positives first? Then, how can you extend this to find the other components of precision and recall? There are multiple ways to approach this problem, but examining the data pairwise may be the most intuitive.
 
+```{r}
+# Format true pairs from cora_gold
+true_pairs <- cora_gold[, c("id1", "id2")]
+true_pairs <- apply(true_pairs, 1, function(x) paste(sort(x), collapse = "_"))
+
+# Format predicted pairs from lsh_jaccard
+predicted_pairs <- as.data.frame(lsh_jaccard[, c("a", "b")])
+predicted_pairs <- apply(predicted_pairs, 1, function(x) paste(sort(x), collapse = "_"))
+
+true_positives <- sum(predicted_pairs %in% true_pairs)
+precision <- true_positives / length(predicted_pairs)
+recall <- true_positives / length(true_pairs)
+
+precision
+recall
+```
+
+
 3. We can further reduce the problem by filtering out candidate pairs of records below a threshold $t$ that are unlikely to be matches. For example, assume $t = 0.8.$ Filter out all record pairs below the threshold of $0.8.$ We will call this locality sensitive hashing with filtering/thresholding. 
+```{r}
+filtered_lsh_jaccard <- lsh_jaccard %>%
+  filter(score >= 0.8)
+
+filtered_pairs <- as.data.frame(filtered_lsh_jaccard[, c("a", "b")])
+filtered_pairs <- apply(filtered_pairs, 1, function(x) paste(sort(x), collapse = "_"))
+
+```
 
 4. Under lsh with t = 0.8, re-compute the precision, recall, and reduction ratio. 
+```{r}
+filtered_true_positives <- sum(filtered_pairs %in% true_pairs)
+
+filtered_precision <- filtered_true_positives / length(filtered_pairs)
+filtered_recall <- filtered_true_positives / length(true_pairs)
+filtered_reduction_ratio <- 1 - (nrow(filtered_lsh_jaccard) / N_total)
+
+filtered_precision
+filtered_recall
+filtered_reduction_ratio
+```
+
 
 5. 
 
 i. Describe what the blocks look like from this method? Hint: Try looking at a histogram of the number of records in each bucket. 
 
+```{r, warning=FALSE}
+bucket_counts <- buckets %>% group_by(buckets) %>% summarize(count = n())
+
+ggplot(bucket_counts, aes(x = count)) +
+  geom_histogram(bins = 100, fill = "blue", color = "black") +
+  xlab("Number of Documents per Bucket") +
+  ylab("Frequency") +
+  ggtitle("Distribution of Number of Documents in Each Bucket") +
+  xlim(0, 75)
+```
+The number of documents per bucket is skewed to the left indicating that there are many buckets that are underpopulated. Some documents are not finding many similar documents. This indicates that similar documents are not always being placed in the same buckets.
+
 ii. Are the blocks non-overlapping or overlapping? Hint: Part (i) should help you determine an answer to this. 
+```{r}
+doc_bucket_counts <- buckets %>%
+  group_by(doc) %>%
+  summarise(bucket_count = n_distinct(buckets)) %>%
+  filter(bucket_count > 1)
+
+nrow(doc_bucket_counts)
+
+```
+Yes, there are overlapping blocks however, there are very few (~1%) blocks that overlap. Bands and rows can lead to overlapping buckets because a document might hash to the same value across different bands, resulting in it being placed in multiple buckets to increase the probability of it matching. However, according to the histogram above and the number of overlapping docs, it is clear that most docs are not being placed into multiple buckets and hence, there are many buckets with few records.
 
 iii. Describe some advantages and disadvantages of the LSH method that you see from using it practically. 
+
+Advantages:
+
+1. By reducing the number of comparisons needed (here, by 93%), LSH makes it more efficient to find similar records.
+
+2. In addition to time efficiency, LSH also reduces the storage space of the data by bringing it into a single signature matrix.
+
+Disadvantage:
+
+1. Depending on the tuning parameters, LSH can fail to find many of the similar records, leading to poor performance.
+
+2. There may be low recall and/or precision due to the approximation of results.
 
